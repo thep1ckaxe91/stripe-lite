@@ -1,62 +1,374 @@
+PaymentIntentId:
+  type: string
+  pattern: ^pi_[A-Za-z0-9]+$
+  maxLength: 255
+  example: pi_01HXZ5JABC1234
+RefundId:
+  type: string
+  pattern: ^re_[A-Za-z0-9]+$
+  maxLength: 255
+  example: re_01HXZ6KDEF5678
+CustomerId:
+  type: string
+  pattern: ^cus_[A-Za-z0-9]+$
+  maxLength: 255
+  example: cus_01HXZ5J9K6B87Q
+PaymentMethodId:
+  type: string
+  pattern: ^pm_[A-Za-z0-9]+$
+  maxLength: 255
+  example: pm_01HXZ5PQRST901
+Currency:
+  type: string
+  pattern: ^[a-z]{3}$
+  minLength: 3
+  maxLength: 3
+  description: The gateway uses supported lowercase ISO 4217 codes. Each code has three letters. The currency cannot change after creation.
+  example: usd
+PositiveAmount:
+  type: integer
+  format: int64
+  minimum: 1
+  description: |-
+    This amount is a positive integer in the smallest currency unit.
+    The maximum value of `int64` is `9223372036854775807`.
+    The API must reject values outside this range.
+    The schema has no numeric `maximum` because JSON tools can round this value.
+  example: 2000
+NonNegativeAmount:
+  type: integer
+  format: int64
+  minimum: 0
+  example: 0
+  description: |-
+    This amount is zero or a positive integer in the smallest currency unit.
+    The maximum value of `int64` is `9223372036854775807`.
+    The API must reject values outside this range.
+    The schema has no numeric `maximum` because JSON tools can round this value.
+CaptureMethod:
+  type: string
+  enum:
+    - automatic
+    - manual
+  description: The `automatic` method captures funds during confirmation. The `manual` method authorizes funds first. It requires a separate full capture.
+  example: automatic
+PaymentIntentStatus:
+  type: string
+  enum:
+    - requires_payment_method
+    - requires_confirmation
+    - requires_capture
+    - succeeded
+    - canceled
+  description: |-
+    Creation without a payment method sets `status` to `requires_payment_method`.
+    Creation with a payment method sets `status` to `requires_confirmation`.
+    Confirmation can start in either state.
+
+    After successful confirmation, automatic capture sets `status` to `succeeded`.
+    After successful confirmation, manual capture sets `status` to `requires_capture`.
+    If the processor declines authorization, the API sets `status` to `requires_payment_method`.
+    The API clears the attached payment method after that failure.
+
+    Capture from `requires_capture` sets `status` to `succeeded`.
+    This capture requires the manual method.
+    Cancellation can start from `requires_payment_method`, `requires_confirmation`, or `requires_capture`.
+    Cancellation sets `status` to `canceled`.
+    Cancellation from `canceled` returns 200 without other changes.
+
+    The `succeeded` and `canceled` states are final.
+    Refunds do not change the PaymentIntent state.
+    Invalid transitions cause 409 without a state change.
+    Validation errors do not change the state.
+    Confirmed processor failures without financial effects do not change the state.
+  example: requires_payment_method
+RefundStatus:
+  type: string
+  enum:
+    - pending
+    - succeeded
+    - failed
+  description: |-
+    Creation sets `status` to `pending` and reserves the refund amount.
+    Internal processing changes `pending` to `succeeded` or `failed`.
+    Success uses the reserved amount.
+    Failure releases the reserved amount.
+
+    The `succeeded` and `failed` states are final.
+    No public endpoint can change the refund state.
+    A new attempt after failure requires a new refund and a new idempotency key.
+  example: pending
+RefundReason:
+  type: string
+  enum:
+    - duplicate
+    - fraudulent
+    - requested_by_customer
+  description: This field gives the refund reason from the merchant. If the request omits `reason`, the response also omits `reason`.
+  example: requested_by_customer
+Metadata:
+  type: object
+  description: The merchant can supply metadata as string keys and string values. If the request omits metadata, the API uses an empty object.
+  maxProperties: 50
+  additionalProperties:
+    type: string
+    maxLength: 500
+  example:
+    support_ticket: ticket_42
 CreatePaymentIntentRequest:
   type: object
+  additionalProperties: false
   required:
     - amount
     - currency
     - customer_id
+    - capture_method
   properties:
     amount:
-      type: integer
-      format: int64
-      description: Amount intended to be collected in smallest currency unit (e.g. cents).
-      example: 2000
+      $ref: ./schemas.yaml#/PositiveAmount
     currency:
-      type: string
-      minLength: 3
-      maxLength: 3
-      description: Three-letter ISO 4217 currency code.
-      example: "usd"
+      $ref: ./schemas.yaml#/Currency
     customer_id:
-      type: string
-      description: Customer identifier.
-      example: "cus_01HXZ5J9K6B87Q"
+      $ref: ./schemas.yaml#/CustomerId
     capture_method:
-      type: string
-      enum:
-        - automatic
-        - manual
-      default: automatic
-
+      $ref: ./schemas.yaml#/CaptureMethod
+    payment_method_id:
+      $ref: ./schemas.yaml#/PaymentMethodId
+  example:
+    amount: 2000
+    currency: usd
+    customer_id: cus_01HXZ5J9K6B87Q
+    capture_method: automatic
+ConfirmPaymentIntentRequest:
+  type: object
+  additionalProperties: false
+  description: Use `{}` to confirm a stored payment method. Supply `payment_method_id` if no method is stored. Supply it to replace a stored method.
+  properties:
+    payment_method_id:
+      $ref: ./schemas.yaml#/PaymentMethodId
+  example:
+    payment_method_id: pm_01HXZ5PQRST901
 PaymentIntentResponse:
   type: object
+  additionalProperties: false
+  description: |-
+    This response contains the current payment state and amounts.
+    Authentication identifies the merchant that owns the resource.
+
+    In `requires_capture`, `amount_capturable` equals `amount`.
+    In other states, `amount_capturable` is zero.
+    In `succeeded`, `amount_received` equals `amount`.
+    In other states, `amount_received` is zero.
+    This contract does not permit partial capture.
+
+    The total of `amount_refunded` and `amount_refund_pending` must not exceed `amount_received`.
+    Refund totals are zero before `succeeded`.
+
+    The `created_at` value does not change.
+    The `updated_at` value changes when the state, payment method, or refund totals change.
+    The API does not change `amount`, `currency`, `customer_id`, or `capture_method`.
   required:
     - id
+    - object
+    - customer_id
+    - payment_method_id
     - amount
     - currency
     - status
+    - capture_method
+    - amount_capturable
+    - amount_received
+    - amount_refunded
+    - amount_refund_pending
     - created_at
+    - updated_at
   properties:
     id:
-      type: string
-      description: Unique identifier for the PaymentIntent.
-      example: "pi_01HXZ5JABC1234"
-    amount:
-      type: integer
-      format: int64
-      example: 2000
-    currency:
-      type: string
-      example: "usd"
-    status:
+      $ref: ./schemas.yaml#/PaymentIntentId
+    object:
       type: string
       enum:
-        - requires_payment_method
-        - requires_confirmation
-        - requires_capture
-        - succeeded
-        - canceled
-      example: "succeeded"
+        - payment_intent
+      example: payment_intent
+    customer_id:
+      $ref: ./schemas.yaml#/CustomerId
+    payment_method_id:
+      type: string
+      nullable: true
+      pattern: ^pm_[A-Za-z0-9]+$
+      maxLength: 255
+      description: This field identifies the payment method for the customer. It is null if no method is attached. A declined authorization clears it.
+      example: pm_01HXZ5PQRST901
+    amount:
+      $ref: ./schemas.yaml#/PositiveAmount
+    currency:
+      $ref: ./schemas.yaml#/Currency
+    status:
+      $ref: ./schemas.yaml#/PaymentIntentStatus
+    capture_method:
+      $ref: ./schemas.yaml#/CaptureMethod
+    amount_capturable:
+      $ref: ./schemas.yaml#/NonNegativeAmount
+    amount_received:
+      $ref: ./schemas.yaml#/NonNegativeAmount
+    amount_refunded:
+      $ref: ./schemas.yaml#/NonNegativeAmount
+    amount_refund_pending:
+      $ref: ./schemas.yaml#/NonNegativeAmount
     created_at:
       type: string
       format: date-time
-      example: "2026-10-23T04:40:00Z"
+      example: "2026-10-26T10:00:00Z"
+    updated_at:
+      type: string
+      format: date-time
+      example: "2026-10-26T10:00:00Z"
+  example:
+    id: pi_01HXZ5JABC1234
+    object: payment_intent
+    customer_id: cus_01HXZ5J9K6B87Q
+    payment_method_id: null
+    amount: 2000
+    currency: usd
+    status: requires_payment_method
+    capture_method: automatic
+    amount_capturable: 0
+    amount_received: 0
+    amount_refunded: 0
+    amount_refund_pending: 0
+    created_at: "2026-10-26T10:00:00Z"
+    updated_at: "2026-10-26T10:00:00Z"
+CreateRefundRequest:
+  type: object
+  additionalProperties: false
+  required:
+    - payment_intent_id
+  properties:
+    payment_intent_id:
+      $ref: ./schemas.yaml#/PaymentIntentId
+    amount:
+      $ref: ./schemas.yaml#/PositiveAmount
+    reason:
+      $ref: ./schemas.yaml#/RefundReason
+    metadata:
+      $ref: ./schemas.yaml#/Metadata
+  description: Omit `amount` to refund the full available amount. The refund uses the currency of the PaymentIntent.
+  example:
+    payment_intent_id: pi_01HXZ5JABC1234
+    amount: 500
+    reason: requested_by_customer
+RefundResponse:
+  type: object
+  additionalProperties: false
+  required:
+    - id
+    - object
+    - payment_intent_id
+    - amount
+    - currency
+    - status
+    - metadata
+    - created_at
+  properties:
+    id:
+      $ref: ./schemas.yaml#/RefundId
+    object:
+      type: string
+      enum:
+        - refund
+      example: refund
+    payment_intent_id:
+      $ref: ./schemas.yaml#/PaymentIntentId
+    amount:
+      $ref: ./schemas.yaml#/PositiveAmount
+    currency:
+      $ref: ./schemas.yaml#/Currency
+    status:
+      $ref: ./schemas.yaml#/RefundStatus
+    reason:
+      $ref: ./schemas.yaml#/RefundReason
+    metadata:
+      $ref: ./schemas.yaml#/Metadata
+    created_at:
+      type: string
+      format: date-time
+      example: "2026-10-26T10:00:00Z"
+  example:
+    id: re_01HXZ6KDEF5678
+    object: refund
+    payment_intent_id: pi_01HXZ5JABC1234
+    amount: 500
+    currency: usd
+    status: pending
+    reason: requested_by_customer
+    metadata:
+      support_ticket: ticket_42
+    created_at: "2026-10-26T10:00:00Z"
+PaymentIntentList:
+  type: object
+  additionalProperties: false
+  required:
+    - object
+    - data
+    - has_more
+    - url
+  properties:
+    object:
+      type: string
+      enum:
+        - list
+      example: list
+    data:
+      type: array
+      maxItems: 100
+      items:
+        $ref: ./schemas.yaml#/PaymentIntentResponse
+    has_more:
+      type: boolean
+      description: This value shows whether more results exist in the requested direction.
+      example: false
+    url:
+      type: string
+      enum:
+        - /v1/payment-intents
+      description: This value contains the collection path and server prefix. It does not contain query parameters.
+      example: /v1/payment-intents
+  example:
+    object: list
+    data: []
+    has_more: false
+    url: /v1/payment-intents
+RefundList:
+  type: object
+  additionalProperties: false
+  required:
+    - object
+    - data
+    - has_more
+    - url
+  properties:
+    object:
+      type: string
+      enum:
+        - list
+      example: list
+    data:
+      type: array
+      maxItems: 100
+      items:
+        $ref: ./schemas.yaml#/RefundResponse
+    has_more:
+      type: boolean
+      description: This value shows whether more results exist in the requested direction.
+      example: false
+    url:
+      type: string
+      enum:
+        - /v1/refunds
+      description: This value contains the collection path and server prefix. It does not contain query parameters.
+      example: /v1/refunds
+  example:
+    object: list
+    data: []
+    has_more: false
+    url: /v1/refunds

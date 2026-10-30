@@ -63,6 +63,24 @@ paths:
   /payment-intents:
     $ref: "./payments/payment_intents.yaml"
 
+  /payment-intents/{id}:
+    $ref: "./payments/payment_intents.yaml#/x-retrieve"
+
+  /payment-intents/{id}/confirm:
+    $ref: "./payments/payment_intents.yaml#/x-confirm"
+
+  /payment-intents/{id}/capture:
+    $ref: "./payments/payment_intents.yaml#/x-capture"
+
+  /payment-intents/{id}/cancel:
+    $ref: "./payments/payment_intents.yaml#/x-cancel"
+
+  /refunds:
+    $ref: "./payments/refunds.yaml"
+
+  /refunds/{id}:
+    $ref: "./payments/refunds.yaml#/x-retrieve"
+
   /webhook-endpoints:
     $ref: "./webhooks/endpoints.yaml"
 

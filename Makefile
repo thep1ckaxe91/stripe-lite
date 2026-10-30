@@ -4,7 +4,7 @@ DIST_DIR := $(CURDIR)/dist
 OAPI_CODEGEN := $(BIN_DIR)/oapi-codegen
 BUNDLED_SPEC := $(DIST_DIR)/openapi.bundled.yaml
 
-.PHONY: all build run test lint-spec lint-redocly bundle-spec codegen clean verify tools
+.PHONY: all build run test test-integration test-intergration lint-spec lint-redocly bundle-spec codegen clean verify tools
 
 all: lint-spec lint-redocly codegen test build
 
@@ -16,7 +16,7 @@ $(OAPI_CODEGEN):
 
 bundle-spec:
 	@mkdir -p $(DIST_DIR)
-	@npx --yes @redocly/cli bundle api/openapi.yaml -o $(BUNDLED_SPEC)
+	@npx --yes @redocly/cli@2.60.0 bundle api/openapi.yaml -o $(BUNDLED_SPEC)
 	@echo "==> Bundled OpenAPI spec at $(BUNDLED_SPEC)"
 
 codegen: $(OAPI_CODEGEN) bundle-spec
@@ -28,7 +28,7 @@ lint-spec:
 	@go run ./cmd/lint-spec api/openapi.yaml
 
 lint-redocly:
-	@npx --yes @redocly/cli lint api/openapi.yaml
+	@npx --yes @redocly/cli@2.60.0 lint api/openapi.yaml
 
 build: codegen
 	@mkdir -p $(BIN_DIR)
@@ -40,6 +40,11 @@ run: build
 
 test: codegen
 	go test -v -race ./...
+
+test-integration: codegen
+	./scripts/with-test-db.sh go test -tags=integration -v -race ./...
+
+test-intergration: test-integration
 
 verify: build
 	@chmod +x scripts/verify.sh

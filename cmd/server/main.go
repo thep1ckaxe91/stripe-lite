@@ -15,6 +15,7 @@ import (
 	v1 "github.com/thep1ckaxe91/stripe-lite/internal/api/v1"
 	"github.com/thep1ckaxe91/stripe-lite/internal/config"
 	"github.com/thep1ckaxe91/stripe-lite/internal/docs"
+	"github.com/thep1ckaxe91/stripe-lite/internal/payments"
 )
 
 const version = "1.0.0"
@@ -29,7 +30,20 @@ func main() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
+	startup, done := context.WithTimeout(context.Background(), 5*time.Second)
+	runtime, err := payments.LoadRuntime(startup)
+	done()
+	if err != nil {
+		log.Fatalf("Payments configuration: %v", err)
+	}
+	defer runtime.Close()
+	workerCtx, stopWorker := context.WithCancel(context.Background())
+	defer stopWorker()
+	workerDone := make(chan struct{})
+	go func() { defer close(workerDone); runtime.RunRefunds(workerCtx) }()
+
 	router := gin.New()
+	router.ContextWithFallback = true
 	router.Use(gin.Recovery())
 	router.Use(gin.Logger())
 
@@ -44,13 +58,21 @@ func main() {
 	})
 
 	// Instantiate strictly-typed domain server
-	domainServer := v1.NewServer(version)
+	domainServer := v1.NewServer(version, v1.WithPayments(runtime.Service, runtime.Credentials, runtime.RateLimit))
+	paymentMiddleware, err := domainServer.PaymentMiddleware(cfg.BasePath)
+	if err != nil {
+		log.Fatalf("Payments contract: %v", err)
+	}
+	router.Use(paymentMiddleware)
 	strictHandler := v1.NewStrictHandler(domainServer, nil)
 
 	// Register generated Gin routes with strict server contract
 	v1.RegisterHandlersWithOptions(router, strictHandler, v1.GinServerOptions{
-		BaseURL: cfg.BasePath,
+		BaseURL:      cfg.BasePath,
+		ErrorHandler: v1.PaymentBindingError,
 	})
+
+	router.NoRoute(v1.NotFoundHandler)
 
 	serverAddr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 	srv := &http.Server{
@@ -84,5 +106,7 @@ func main() {
 		log.Fatalf("[Server] Forced server termination: %v", err)
 	}
 
+	stopWorker()
+	<-workerDone
 	log.Println("[Server] Gateway shut down cleanly.")
 }

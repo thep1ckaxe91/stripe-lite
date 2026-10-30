@@ -1,0 +1,335 @@
+post:
+  operationId: createRefund
+  summary: Create a full or partial refund
+  description: |-
+    This operation requires the `refunds:write` scope.
+    The permission applies to bearer tokens and API keys.
+    If valid credentials do not have this scope, the API returns 403.
+    The API checks the scope before it reads resources.
+
+    If the resource does not exist, the API returns 404.
+    If another merchant owns the resource, the API returns 404.
+
+    The quota applies to all credentials for one merchant.
+    If a request exceeds the configured quota, the API returns 429.
+    The `Retry-After` header gives the required wait time.
+
+    Refund creation requires a captured PaymentIntent with `status: succeeded`.
+    The authenticated merchant must own the PaymentIntent.
+    The refund uses the currency of the PaymentIntent.
+    The client cannot supply or change this currency.
+
+    Omit `amount` to refund the full available amount.
+    Supply a positive `amount` for a partial refund.
+    The available amount equals `amount_received - amount_refunded - amount_refund_pending`.
+    An uncaptured payment or an amount above the available amount causes 409.
+    If the full available amount is zero, a full refund request causes 409.
+
+    The API creates the refund and reserves its amount as one atomic operation.
+    This rule also applies to concurrent requests with different idempotency keys.
+    A new refund has `status: pending`.
+    The API reserves its amount immediately.
+
+    Internal processing changes `pending` to `succeeded` or `failed`.
+    No public endpoint can force this change.
+    Success moves the reserved amount into `amount_refunded`.
+    Failure releases the reserved amount.
+    The parent PaymentIntent stays `succeeded`, including after a full refund.
+
+    The `Idempotency-Key` header is required.
+    The key contains 1 to 255 characters.
+    Each merchant and creation operation has separate keys.
+    The API keeps the key binding while it keeps the resource.
+
+    The API normalizes the request before it compares payloads.
+    An omitted default value equals the same explicit value.
+    If the API accepts the request, it binds the key to that payload.
+
+    If a retry has the same key and payload, the API returns the original status and body.
+    The API does not create another resource.
+    The returned body does not show later resource changes.
+    Use the retrieve operation to read the current resource.
+
+    If a request uses the same key with another payload, the API returns 409.
+    If the first request is still in progress, the API returns 409.
+    If the API rejects a request before resource creation, it does not bind the key.
+
+    If the original request omitted `amount`, a retry uses the original calculated amount.
+    The API does not calculate the available amount again for that retry.
+  tags:
+    - Payments & Core Engine
+  parameters:
+    - $ref: ../components/headers.yaml#/IdempotencyKeyHeader
+    - $ref: ../components/headers.yaml#/XRequestIdHeader
+  responses:
+    '201':
+      description: The API created a pending refund and reserved its amount.
+      content:
+        application/json:
+          schema:
+            $ref: ./schemas.yaml#/RefundResponse
+          examples:
+            partial_refund:
+              summary: Partial refund
+              value:
+                id: re_01HXZ6KDEF5678
+                object: refund
+                payment_intent_id: pi_01HXZ5JABC1234
+                amount: 500
+                currency: usd
+                status: pending
+                reason: requested_by_customer
+                metadata:
+                  support_ticket: ticket_42
+                created_at: '2026-10-26T10:00:00Z'
+            full_refund:
+              summary: Full refund
+              value:
+                id: re_01HXZ6KDEF5678
+                object: refund
+                payment_intent_id: pi_01HXZ5JABC1234
+                amount: 2000
+                currency: usd
+                status: pending
+                metadata: {}
+                created_at: '2026-10-26T10:00:00Z'
+    '400':
+      $ref: ./payment_intents.yaml#/x-responses/CreateInvalidRequest
+    '401':
+      $ref: ./payment_intents.yaml#/x-responses/Unauthorized
+    '403':
+      $ref: ./payment_intents.yaml#/x-responses/Forbidden
+    '404':
+      $ref: ./payment_intents.yaml#/x-responses/NotFound
+    '409':
+      $ref: ./payment_intents.yaml#/x-responses/RefundConflict
+    '429':
+      $ref: ./payment_intents.yaml#/x-responses/RateLimited
+    default:
+      $ref: ./payment_intents.yaml#/x-responses/ServerError
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema:
+          $ref: ./schemas.yaml#/CreateRefundRequest
+        examples:
+          partial_refund:
+            summary: Partial refund
+            value:
+              payment_intent_id: pi_01HXZ5JABC1234
+              amount: 500
+              reason: requested_by_customer
+              metadata:
+                support_ticket: ticket_42
+          full_remaining_refund:
+            summary: Full remaining refund
+            value:
+              payment_intent_id: pi_01HXZ5JABC1234
+get:
+  operationId: listRefunds
+  summary: List refunds
+  description: |-
+    This operation requires the `refunds:read` scope.
+    The permission applies to bearer tokens and API keys.
+    If valid credentials do not have this scope, the API returns 403.
+    The API checks the scope before it reads resources.
+
+    The API returns resources for the authenticated merchant only.
+    If valid filters have no matches, the API returns an empty list.
+
+    The quota applies to all credentials for one merchant.
+    If a request exceeds the configured quota, the API returns 429.
+    The `Retry-After` header gives the required wait time.
+
+    The API sorts results by `created_at` in descending order.
+    If timestamps are equal, the API sorts by `id` in descending order.
+    The API does not let the client change this order.
+
+    The cursor is a resource ID.
+    It is not an offset.
+    The API does not return the cursor resource in the page.
+    With `starting_after`, the API returns the nearest older resources.
+    With `ending_before`, the API returns the nearest newer resources.
+    The API always returns each page in descending order.
+
+    To request older resources, use the last returned ID as `starting_after`.
+    To request newer resources, use the first returned ID as `ending_before`.
+    Do not send both cursors.
+
+    The cursor must use the ID type for the collection.
+    The cursor must belong to the authenticated merchant.
+    The cursor must match the active filters.
+    If a condition is false, the API returns 400.
+    An empty cursor or a cursor with an invalid format also causes 400.
+    Errors do not reveal resources from another merchant.
+
+    The filters use logical AND.
+    Keep the filters unchanged between page requests.
+    If valid filters have no matches, the API returns an empty list.
+
+    The `limit` value is 1 to 100.
+    The default value is 10.
+    The `has_more` field shows whether more results exist in the requested direction.
+    An empty page contains `data: []` and `has_more: false`.
+
+    Pagination does not provide a fixed snapshot.
+    New resources can appear when the client requests newer resources.
+    The `url` field contains the collection path and server prefix.
+    The field does not contain query parameters.
+  tags:
+    - Payments & Core Engine
+  parameters:
+    - $ref: ../components/pagination.yaml#/StartingAfterQueryParam
+    - $ref: ../components/pagination.yaml#/EndingBeforeQueryParam
+    - $ref: ../components/pagination.yaml#/LimitQueryParam
+    - $ref: ../components/headers.yaml#/XRequestIdHeader
+    - name: payment_intent_id
+      in: query
+      required: false
+      description: >-
+        The API returns refunds for this PaymentIntent only. If a valid ID has no matches, the API
+        returns an empty list.
+      schema:
+        $ref: ./schemas.yaml#/PaymentIntentId
+      example: pi_01HXZ5JABC1234
+    - name: status
+      in: query
+      required: false
+      description: The API returns resources with this state only.
+      schema:
+        $ref: ./schemas.yaml#/RefundStatus
+      example: succeeded
+  responses:
+    '200':
+      description: The response contains a page of refunds.
+      content:
+        application/json:
+          schema:
+            $ref: ./schemas.yaml#/RefundList
+          examples:
+            page:
+              summary: Page
+              value:
+                object: list
+                data:
+                  - id: re_01HXZ6KDEF5678
+                    object: refund
+                    payment_intent_id: pi_01HXZ5JABC1234
+                    amount: 500
+                    currency: usd
+                    status: succeeded
+                    reason: requested_by_customer
+                    metadata:
+                      support_ticket: ticket_42
+                    created_at: '2026-10-26T10:00:00Z'
+                has_more: true
+                url: /v1/refunds
+            empty:
+              summary: Empty
+              value:
+                object: list
+                data: []
+                has_more: false
+                url: /v1/refunds
+    '400':
+      $ref: ./payment_intents.yaml#/x-responses/InvalidPagination
+    '401':
+      $ref: ./payment_intents.yaml#/x-responses/Unauthorized
+    '403':
+      $ref: ./payment_intents.yaml#/x-responses/Forbidden
+    '429':
+      $ref: ./payment_intents.yaml#/x-responses/RateLimited
+    default:
+      $ref: ./payment_intents.yaml#/x-responses/ServerError
+x-retrieve:
+  get:
+    operationId: getRefund
+    summary: Retrieve a refund
+    description: |-
+      This operation requires the `refunds:read` scope.
+      The permission applies to bearer tokens and API keys.
+      If valid credentials do not have this scope, the API returns 403.
+      The API checks the scope before it reads resources.
+
+      If the resource does not exist, the API returns 404.
+      If another merchant owns the resource, the API returns 404.
+
+      The quota applies to all credentials for one merchant.
+      If a request exceeds the configured quota, the API returns 429.
+      The `Retry-After` header gives the required wait time.
+
+      This operation returns the current refund status and metadata from the merchant.
+      Internal processing can change `pending` to `succeeded` or `failed`.
+      The `succeeded` and `failed` states are final.
+      After a failed refund, a new attempt requires a new idempotency key.
+    tags:
+      - Payments & Core Engine
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: This ID identifies a refund that belongs to the authenticated merchant.
+        schema:
+          $ref: ./schemas.yaml#/RefundId
+        example: re_01HXZ6KDEF5678
+      - $ref: ../components/headers.yaml#/XRequestIdHeader
+    responses:
+      '200':
+        description: The response contains the current refund.
+        content:
+          application/json:
+            schema:
+              $ref: ./schemas.yaml#/RefundResponse
+            examples:
+              pending:
+                summary: Pending
+                value:
+                  id: re_01HXZ6KDEF5678
+                  object: refund
+                  payment_intent_id: pi_01HXZ5JABC1234
+                  amount: 500
+                  currency: usd
+                  status: pending
+                  reason: requested_by_customer
+                  metadata:
+                    support_ticket: ticket_42
+                  created_at: '2026-10-26T10:00:00Z'
+              succeeded:
+                summary: Succeeded
+                value:
+                  id: re_01HXZ6KDEF5678
+                  object: refund
+                  payment_intent_id: pi_01HXZ5JABC1234
+                  amount: 500
+                  currency: usd
+                  status: succeeded
+                  reason: requested_by_customer
+                  metadata:
+                    support_ticket: ticket_42
+                  created_at: '2026-10-26T10:00:00Z'
+              failed:
+                summary: Failed
+                value:
+                  id: re_01HXZ6KDEF5678
+                  object: refund
+                  payment_intent_id: pi_01HXZ5JABC1234
+                  amount: 500
+                  currency: usd
+                  status: failed
+                  reason: requested_by_customer
+                  metadata:
+                    support_ticket: ticket_42
+                  created_at: '2026-10-26T10:00:00Z'
+      '400':
+        $ref: ./payment_intents.yaml#/x-responses/InvalidPathParameter
+      '401':
+        $ref: ./payment_intents.yaml#/x-responses/Unauthorized
+      '403':
+        $ref: ./payment_intents.yaml#/x-responses/Forbidden
+      '404':
+        $ref: ./payment_intents.yaml#/x-responses/NotFound
+      '429':
+        $ref: ./payment_intents.yaml#/x-responses/RateLimited
+      default:
+        $ref: ./payment_intents.yaml#/x-responses/ServerError

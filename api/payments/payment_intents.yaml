@@ -1,40 +1,1034 @@
 post:
-  summary: Create payment intent (Stub)
-  description: Initiates a new PaymentIntent with idempotency enforcement. Managed by Long.
   operationId: createPaymentIntent
+  summary: Create a payment intent
+  description: >-
+    This operation requires the `payment_intents:write` scope.
+
+    The permission applies to bearer tokens and API keys.
+
+    If valid credentials do not have this scope, the API returns 403.
+
+    The API checks the scope before it reads resources.
+
+
+    If the resource does not exist, the API returns 404.
+
+    If another merchant owns the resource, the API returns 404.
+
+
+    The quota applies to all credentials for one merchant.
+
+    If a request exceeds the configured quota, the API returns 429.
+
+    The `Retry-After` header gives the required wait time.
+
+
+    This operation creates a PaymentIntent for a customer of the authenticated merchant.
+
+    The API gets `merchant_id` from authentication.
+
+    The client cannot supply `merchant_id`.
+
+    Creation does not authorize or capture funds.
+
+
+    If the request omits `payment_method_id`, the API sets `status` to `requires_payment_method`.
+
+    If the customer owns the supplied payment method, the API sets `status` to
+    `requires_confirmation`.
+
+    The `capture_method` field is required.
+
+    Its value is `automatic` or `manual`.
+
+
+    The amount is a positive integer in the smallest currency unit.
+
+    The amount is not a floating-point number.
+
+    The currency is a supported lowercase code with three letters.
+
+    If the currency is not supported, the API returns 400.
+
+    If a customer or payment method is unknown or inaccessible, the API returns 404.
+
+
+    The `Idempotency-Key` header is required.
+
+    The key contains 1 to 255 characters.
+
+    Each merchant and creation operation has separate keys.
+
+    The API keeps the key binding while it keeps the resource.
+
+
+    The API normalizes the request before it compares payloads.
+
+    An omitted default value equals the same explicit value.
+
+    If the API accepts the request, it binds the key to that payload.
+
+
+    If a retry has the same key and payload, the API returns the original status and body.
+
+    The API does not create another resource.
+
+    The returned body does not show later resource changes.
+
+    Use the retrieve operation to read the current resource.
+
+
+    If a request uses the same key with another payload, the API returns 409.
+
+    If the first request is still in progress, the API returns 409.
+
+    If the API rejects a request before resource creation, it does not bind the key.
   tags:
     - Payments & Core Engine
   parameters:
-    - $ref: "../components/headers.yaml#/IdempotencyKeyHeader"
-    - $ref: "../components/headers.yaml#/XRequestIdHeader"
+    - $ref: ../components/headers.yaml#/IdempotencyKeyHeader
+    - $ref: ../components/headers.yaml#/XRequestIdHeader
+  responses:
+    '201':
+      description: The API created the PaymentIntent. An identical retry returns this original response.
+      content:
+        application/json:
+          schema:
+            $ref: ./schemas.yaml#/PaymentIntentResponse
+          examples:
+            awaiting_payment_method:
+              summary: Awaiting payment method
+              value:
+                id: pi_01HXZ5JABC1234
+                object: payment_intent
+                customer_id: cus_01HXZ5J9K6B87Q
+                payment_method_id: null
+                amount: 2000
+                currency: usd
+                status: requires_payment_method
+                capture_method: automatic
+                amount_capturable: 0
+                amount_received: 0
+                amount_refunded: 0
+                amount_refund_pending: 0
+                created_at: '2026-10-26T10:00:00Z'
+                updated_at: '2026-10-26T10:00:00Z'
+            ready_for_confirmation:
+              summary: Ready for confirmation
+              value:
+                id: pi_01HXZ5JABC1234
+                object: payment_intent
+                customer_id: cus_01HXZ5J9K6B87Q
+                payment_method_id: pm_01HXZ5PQRST901
+                amount: 2000
+                currency: usd
+                status: requires_confirmation
+                capture_method: manual
+                amount_capturable: 0
+                amount_received: 0
+                amount_refunded: 0
+                amount_refund_pending: 0
+                created_at: '2026-10-26T10:00:00Z'
+                updated_at: '2026-10-26T10:00:00Z'
+    '400':
+      $ref: ./payment_intents.yaml#/x-responses/CreateInvalidRequest
+    '401':
+      $ref: ./payment_intents.yaml#/x-responses/Unauthorized
+    '403':
+      $ref: ./payment_intents.yaml#/x-responses/Forbidden
+    '404':
+      $ref: ./payment_intents.yaml#/x-responses/NotFound
+    '409':
+      $ref: ./payment_intents.yaml#/x-responses/IdempotencyConflict
+    '429':
+      $ref: ./payment_intents.yaml#/x-responses/RateLimited
+    default:
+      $ref: ./payment_intents.yaml#/x-responses/ServerError
   requestBody:
     required: true
     content:
       application/json:
         schema:
-          $ref: "./schemas.yaml#/CreatePaymentIntentRequest"
+          $ref: ./schemas.yaml#/CreatePaymentIntentRequest
+        examples:
+          automatic_without_payment_method:
+            summary: Automatic without payment method
+            value:
+              amount: 2000
+              currency: usd
+              customer_id: cus_01HXZ5J9K6B87Q
+              capture_method: automatic
+          manual_with_payment_method:
+            summary: Manual with payment method
+            value:
+              amount: 2000
+              currency: usd
+              customer_id: cus_01HXZ5J9K6B87Q
+              capture_method: manual
+              payment_method_id: pm_01HXZ5PQRST901
+get:
+  operationId: listPaymentIntents
+  summary: List payment intents
+  description: |-
+    This operation requires the `payment_intents:read` scope.
+    The permission applies to bearer tokens and API keys.
+    If valid credentials do not have this scope, the API returns 403.
+    The API checks the scope before it reads resources.
+
+    The API returns resources for the authenticated merchant only.
+    If valid filters have no matches, the API returns an empty list.
+
+    The quota applies to all credentials for one merchant.
+    If a request exceeds the configured quota, the API returns 429.
+    The `Retry-After` header gives the required wait time.
+
+    The API sorts results by `created_at` in descending order.
+    If timestamps are equal, the API sorts by `id` in descending order.
+    The API does not let the client change this order.
+
+    The cursor is a resource ID.
+    It is not an offset.
+    The API does not return the cursor resource in the page.
+    With `starting_after`, the API returns the nearest older resources.
+    With `ending_before`, the API returns the nearest newer resources.
+    The API always returns each page in descending order.
+
+    To request older resources, use the last returned ID as `starting_after`.
+    To request newer resources, use the first returned ID as `ending_before`.
+    Do not send both cursors.
+
+    The cursor must use the ID type for the collection.
+    The cursor must belong to the authenticated merchant.
+    The cursor must match the active filters.
+    If a condition is false, the API returns 400.
+    An empty cursor or a cursor with an invalid format also causes 400.
+    Errors do not reveal resources from another merchant.
+
+    The filters use logical AND.
+    Keep the filters unchanged between page requests.
+    If valid filters have no matches, the API returns an empty list.
+
+    The `limit` value is 1 to 100.
+    The default value is 10.
+    The `has_more` field shows whether more results exist in the requested direction.
+    An empty page contains `data: []` and `has_more: false`.
+
+    Pagination does not provide a fixed snapshot.
+    New resources can appear when the client requests newer resources.
+    The `url` field contains the collection path and server prefix.
+    The field does not contain query parameters.
+  tags:
+    - Payments & Core Engine
+  parameters:
+    - $ref: ../components/pagination.yaml#/StartingAfterQueryParam
+    - $ref: ../components/pagination.yaml#/EndingBeforeQueryParam
+    - $ref: ../components/pagination.yaml#/LimitQueryParam
+    - $ref: ../components/headers.yaml#/XRequestIdHeader
+    - name: customer_id
+      in: query
+      required: false
+      description: >-
+        The API returns payment intents for this customer only. If a valid ID has no matches, the
+        API returns an empty list.
+      schema:
+        $ref: ./schemas.yaml#/CustomerId
+      example: cus_01HXZ5J9K6B87Q
+    - name: status
+      in: query
+      required: false
+      description: The API returns resources with this state only.
+      schema:
+        $ref: ./schemas.yaml#/PaymentIntentStatus
+      example: succeeded
   responses:
-    "201":
-      description: PaymentIntent created successfully.
+    '200':
+      description: The response contains a page of payment intents.
       content:
         application/json:
           schema:
-            $ref: "./schemas.yaml#/PaymentIntentResponse"
-    "400":
-      description: Invalid request payload.
+            $ref: ./schemas.yaml#/PaymentIntentList
+          examples:
+            page:
+              summary: Page
+              value:
+                object: list
+                data:
+                  - id: pi_01HXZ5JABC1234
+                    object: payment_intent
+                    customer_id: cus_01HXZ5J9K6B87Q
+                    payment_method_id: pm_01HXZ5PQRST901
+                    amount: 2000
+                    currency: usd
+                    status: succeeded
+                    capture_method: automatic
+                    amount_capturable: 0
+                    amount_received: 2000
+                    amount_refunded: 0
+                    amount_refund_pending: 0
+                    created_at: '2026-10-26T10:00:00Z'
+                    updated_at: '2026-10-26T10:00:00Z'
+                has_more: true
+                url: /v1/payment-intents
+            empty:
+              summary: Empty
+              value:
+                object: list
+                data: []
+                has_more: false
+                url: /v1/payment-intents
+    '400':
+      $ref: ./payment_intents.yaml#/x-responses/InvalidPagination
+    '401':
+      $ref: ./payment_intents.yaml#/x-responses/Unauthorized
+    '403':
+      $ref: ./payment_intents.yaml#/x-responses/Forbidden
+    '429':
+      $ref: ./payment_intents.yaml#/x-responses/RateLimited
+    default:
+      $ref: ./payment_intents.yaml#/x-responses/ServerError
+x-retrieve:
+  get:
+    operationId: getPaymentIntent
+    summary: Retrieve a payment intent
+    description: |-
+      This operation requires the `payment_intents:read` scope.
+      The permission applies to bearer tokens and API keys.
+      If valid credentials do not have this scope, the API returns 403.
+      The API checks the scope before it reads resources.
+
+      If the resource does not exist, the API returns 404.
+      If another merchant owns the resource, the API returns 404.
+
+      The quota applies to all credentials for one merchant.
+      If a request exceeds the configured quota, the API returns 429.
+      The `Retry-After` header gives the required wait time.
+
+      This operation returns the current PaymentIntent.
+      The response includes captured, capturable, refunded, and pending-refund amounts.
+      Authentication can use a bearer token or the `X-API-Key` header.
+    tags:
+      - Payments & Core Engine
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: This ID identifies a PaymentIntent that belongs to the authenticated merchant.
+        schema:
+          $ref: ./schemas.yaml#/PaymentIntentId
+        example: pi_01HXZ5JABC1234
+      - $ref: ../components/headers.yaml#/XRequestIdHeader
+    responses:
+      '200':
+        description: The response contains the current PaymentIntent.
+        content:
+          application/json:
+            schema:
+              $ref: ./schemas.yaml#/PaymentIntentResponse
+            examples:
+              captured:
+                summary: Captured
+                value:
+                  id: pi_01HXZ5JABC1234
+                  object: payment_intent
+                  customer_id: cus_01HXZ5J9K6B87Q
+                  payment_method_id: pm_01HXZ5PQRST901
+                  amount: 2000
+                  currency: usd
+                  status: succeeded
+                  capture_method: automatic
+                  amount_capturable: 0
+                  amount_received: 2000
+                  amount_refunded: 0
+                  amount_refund_pending: 0
+                  created_at: '2026-10-26T10:00:00Z'
+                  updated_at: '2026-10-26T10:00:00Z'
+      '400':
+        $ref: ./payment_intents.yaml#/x-responses/InvalidPathParameter
+      '401':
+        $ref: ./payment_intents.yaml#/x-responses/Unauthorized
+      '403':
+        $ref: ./payment_intents.yaml#/x-responses/Forbidden
+      '404':
+        $ref: ./payment_intents.yaml#/x-responses/NotFound
+      '429':
+        $ref: ./payment_intents.yaml#/x-responses/RateLimited
+      default:
+        $ref: ./payment_intents.yaml#/x-responses/ServerError
+x-confirm:
+  post:
+    operationId: confirmPaymentIntent
+    summary: Confirm and authorize a payment intent
+    description: >-
+      This operation requires the `payment_intents:write` scope.
+
+      The permission applies to bearer tokens and API keys.
+
+      If valid credentials do not have this scope, the API returns 403.
+
+      The API checks the scope before it reads resources.
+
+
+      If the resource does not exist, the API returns 404.
+
+      If another merchant owns the resource, the API returns 404.
+
+
+      The quota applies to all credentials for one merchant.
+
+      If a request exceeds the configured quota, the API returns 429.
+
+      The `Retry-After` header gives the required wait time.
+
+
+      Confirmation can start from `requires_payment_method` or `requires_confirmation`.
+
+      In `requires_payment_method`, the request must supply `payment_method_id`.
+
+      In `requires_confirmation`, an omitted `payment_method_id` uses the stored method.
+
+      A supplied `payment_method_id` replaces the stored method.
+
+      The payment method must belong to the customer and merchant of the PaymentIntent.
+
+
+      After successful authorization, automatic capture sets `status` to `succeeded`.
+
+      The API sets `amount_received` to `amount`.
+
+      After successful authorization, manual capture sets `status` to `requires_capture`.
+
+      The API sets `amount_capturable` to `amount`.
+
+
+      The contract combines authorization and automatic capture in one synchronous operation.
+
+      The contract has no `processing` or `requires_action` states.
+
+      If the processor declines authorization, the API returns 402.
+
+      The API clears `payment_method_id` and sets `status` to `requires_payment_method`.
+
+      The API does not capture funds or keep an authorization.
+
+
+      If a required payment method is missing, the API returns 400 without a state change.
+
+      Confirmation from `requires_capture`, `succeeded`, or `canceled` causes 409.
+
+      If a confirmed processor failure has no financial effect, the API returns 503 without a state
+      change.
+
+      The API makes each state change as one atomic operation.
+
+      Only one of two conflicting requests can succeed.
+
+
+      This action endpoint represents a state transition that issue #2 requires.
+    tags:
+      - Payments & Core Engine
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: This ID identifies a PaymentIntent that belongs to the authenticated merchant.
+        schema:
+          $ref: ./schemas.yaml#/PaymentIntentId
+        example: pi_01HXZ5JABC1234
+      - $ref: ../components/headers.yaml#/XRequestIdHeader
+    responses:
+      '200':
+        description: >-
+          The processor authorized the payment. With automatic capture, the API also captured the
+          full amount.
+        content:
+          application/json:
+            schema:
+              $ref: ./schemas.yaml#/PaymentIntentResponse
+            examples:
+              automatic_capture:
+                summary: Automatic capture
+                value:
+                  id: pi_01HXZ5JABC1234
+                  object: payment_intent
+                  customer_id: cus_01HXZ5J9K6B87Q
+                  payment_method_id: pm_01HXZ5PQRST901
+                  amount: 2000
+                  currency: usd
+                  status: succeeded
+                  capture_method: automatic
+                  amount_capturable: 0
+                  amount_received: 2000
+                  amount_refunded: 0
+                  amount_refund_pending: 0
+                  created_at: '2026-10-26T10:00:00Z'
+                  updated_at: '2026-10-26T10:00:00Z'
+              manual_authorization:
+                summary: Manual authorization
+                value:
+                  id: pi_01HXZ5JABC1234
+                  object: payment_intent
+                  customer_id: cus_01HXZ5J9K6B87Q
+                  payment_method_id: pm_01HXZ5PQRST901
+                  amount: 2000
+                  currency: usd
+                  status: requires_capture
+                  capture_method: manual
+                  amount_capturable: 2000
+                  amount_received: 0
+                  amount_refunded: 0
+                  amount_refund_pending: 0
+                  created_at: '2026-10-26T10:00:00Z'
+                  updated_at: '2026-10-26T10:00:00Z'
+      '400':
+        $ref: ./payment_intents.yaml#/x-responses/ConfirmInvalidRequest
+      '401':
+        $ref: ./payment_intents.yaml#/x-responses/Unauthorized
+      '402':
+        $ref: ./payment_intents.yaml#/x-responses/PaymentDeclined
+      '403':
+        $ref: ./payment_intents.yaml#/x-responses/Forbidden
+      '404':
+        $ref: ./payment_intents.yaml#/x-responses/NotFound
+      '409':
+        $ref: ./payment_intents.yaml#/x-responses/StateConflict
+      '429':
+        $ref: ./payment_intents.yaml#/x-responses/RateLimited
+      '503':
+        $ref: ./payment_intents.yaml#/x-responses/ProcessorUnavailable
+      default:
+        $ref: ./payment_intents.yaml#/x-responses/ServerError
+    requestBody:
+      required: true
       content:
-        application/problem+json:
+        application/json:
           schema:
-            $ref: "../components/problem.yaml#/ProblemDocument"
-    "409":
-      description: Idempotency conflict.
-      content:
-        application/problem+json:
-          schema:
-            $ref: "../components/problem.yaml#/ProblemDocument"
-    "501":
-      description: Domain handler unimplemented.
-      content:
-        application/problem+json:
-          schema:
-            $ref: "../components/problem.yaml#/ProblemDocument"
+            $ref: ./schemas.yaml#/ConfirmPaymentIntentRequest
+          examples:
+            supply_payment_method:
+              summary: Supply payment method
+              value:
+                payment_method_id: pm_01HXZ5PQRST901
+            use_stored_payment_method:
+              summary: Use stored payment method
+              value: {}
+x-capture:
+  post:
+    operationId: capturePaymentIntent
+    summary: Capture an authorized payment intent
+    description: |-
+      This operation requires the `payment_intents:write` scope.
+      The permission applies to bearer tokens and API keys.
+      If valid credentials do not have this scope, the API returns 403.
+      The API checks the scope before it reads resources.
+
+      If the resource does not exist, the API returns 404.
+      If another merchant owns the resource, the API returns 404.
+
+      The quota applies to all credentials for one merchant.
+      If a request exceeds the configured quota, the API returns 429.
+      The `Retry-After` header gives the required wait time.
+
+      Capture requires `capture_method: manual` and `status: requires_capture`.
+      The API captures the full authorized amount.
+      This contract does not permit partial capture.
+      Do not send a request body.
+
+      After capture, the API sets `status` to `succeeded`.
+      The API sets `amount_received` to `amount`.
+      The API sets `amount_capturable` to 0.
+
+      Other states and automatic capture methods cause 409.
+      A repeated capture request also causes 409.
+      The API does not move funds again.
+      If a confirmed processor failure has no financial effect, the API returns 503.
+      The authorization and payment state do not change after that failure.
+      Only capture or cancellation can succeed for the same authorization.
+
+      This action endpoint represents a state transition that issue #2 requires.
+    tags:
+      - Payments & Core Engine
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: This ID identifies a PaymentIntent that belongs to the authenticated merchant.
+        schema:
+          $ref: ./schemas.yaml#/PaymentIntentId
+        example: pi_01HXZ5JABC1234
+      - $ref: ../components/headers.yaml#/XRequestIdHeader
+    responses:
+      '200':
+        description: The API captured the full authorized amount.
+        content:
+          application/json:
+            schema:
+              $ref: ./schemas.yaml#/PaymentIntentResponse
+            examples:
+              captured:
+                summary: Captured
+                value:
+                  id: pi_01HXZ5JABC1234
+                  object: payment_intent
+                  customer_id: cus_01HXZ5J9K6B87Q
+                  payment_method_id: pm_01HXZ5PQRST901
+                  amount: 2000
+                  currency: usd
+                  status: succeeded
+                  capture_method: manual
+                  amount_capturable: 0
+                  amount_received: 2000
+                  amount_refunded: 0
+                  amount_refund_pending: 0
+                  created_at: '2026-10-26T10:00:00Z'
+                  updated_at: '2026-10-26T10:00:00Z'
+      '400':
+        $ref: ./payment_intents.yaml#/x-responses/InvalidPathParameter
+      '401':
+        $ref: ./payment_intents.yaml#/x-responses/Unauthorized
+      '403':
+        $ref: ./payment_intents.yaml#/x-responses/Forbidden
+      '404':
+        $ref: ./payment_intents.yaml#/x-responses/NotFound
+      '409':
+        $ref: ./payment_intents.yaml#/x-responses/StateConflict
+      '429':
+        $ref: ./payment_intents.yaml#/x-responses/RateLimited
+      '503':
+        $ref: ./payment_intents.yaml#/x-responses/ProcessorUnavailable
+      default:
+        $ref: ./payment_intents.yaml#/x-responses/ServerError
+x-cancel:
+  post:
+    operationId: cancelPaymentIntent
+    summary: Cancel an uncaptured payment intent
+    description: >-
+      This operation requires the `payment_intents:write` scope.
+
+      The permission applies to bearer tokens and API keys.
+
+      If valid credentials do not have this scope, the API returns 403.
+
+      The API checks the scope before it reads resources.
+
+
+      If the resource does not exist, the API returns 404.
+
+      If another merchant owns the resource, the API returns 404.
+
+
+      The quota applies to all credentials for one merchant.
+
+      If a request exceeds the configured quota, the API returns 429.
+
+      The `Retry-After` header gives the required wait time.
+
+
+      Cancellation can start from `requires_payment_method`, `requires_confirmation`, or
+      `requires_capture`.
+
+      After cancellation, the API sets `status` to `canceled`.
+
+      The API sets `amount_capturable` to 0.
+
+      The API cancels any manual authorization before it reports success.
+
+      Do not send a request body.
+
+
+      If the PaymentIntent is already `canceled`, the API returns its current representation with
+      200.
+
+      The repeated request makes no other change.
+
+      If the PaymentIntent is `succeeded`, the API returns 409.
+
+      Use a refund for a captured payment.
+
+
+      If a confirmed cancellation failure has no financial effect, the API returns 503.
+
+      The previous state does not change after that failure.
+
+      The `canceled` state is final.
+
+      The API cannot confirm or capture a canceled PaymentIntent.
+
+
+      This action endpoint represents a state transition that issue #2 requires.
+    tags:
+      - Payments & Core Engine
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: This ID identifies a PaymentIntent that belongs to the authenticated merchant.
+        schema:
+          $ref: ./schemas.yaml#/PaymentIntentId
+        example: pi_01HXZ5JABC1234
+      - $ref: ../components/headers.yaml#/XRequestIdHeader
+    responses:
+      '200':
+        description: The PaymentIntent is canceled. It can also have been canceled before this request.
+        content:
+          application/json:
+            schema:
+              $ref: ./schemas.yaml#/PaymentIntentResponse
+            examples:
+              canceled:
+                summary: Canceled
+                value:
+                  id: pi_01HXZ5JABC1234
+                  object: payment_intent
+                  customer_id: cus_01HXZ5J9K6B87Q
+                  payment_method_id: null
+                  amount: 2000
+                  currency: usd
+                  status: canceled
+                  capture_method: automatic
+                  amount_capturable: 0
+                  amount_received: 0
+                  amount_refunded: 0
+                  amount_refund_pending: 0
+                  created_at: '2026-10-26T10:00:00Z'
+                  updated_at: '2026-10-26T10:00:00Z'
+      '400':
+        $ref: ./payment_intents.yaml#/x-responses/InvalidPathParameter
+      '401':
+        $ref: ./payment_intents.yaml#/x-responses/Unauthorized
+      '403':
+        $ref: ./payment_intents.yaml#/x-responses/Forbidden
+      '404':
+        $ref: ./payment_intents.yaml#/x-responses/NotFound
+      '409':
+        $ref: ./payment_intents.yaml#/x-responses/StateConflict
+      '429':
+        $ref: ./payment_intents.yaml#/x-responses/RateLimited
+      '503':
+        $ref: ./payment_intents.yaml#/x-responses/ProcessorUnavailable
+      default:
+        $ref: ./payment_intents.yaml#/x-responses/ServerError
+x-responses:
+  CreateInvalidRequest:
+    description: >-
+      The request body or the required `Idempotency-Key` header is invalid. A required field or
+      header can also be missing. The API creates no resource.
+    content:
+      application/problem+json:
+        schema:
+          $ref: ../components/problem.yaml#/ProblemDocument
+        examples:
+          invalid_amount:
+            summary: Invalid amount
+            value:
+              type: 'https://api.stripe-lite.internal/errors/invalid-request'
+              title: Bad Request
+              status: 400
+              detail: amount must be a positive integer in the smallest currency unit.
+              invalid_params:
+                - name: amount
+                  reason: Must be greater than 0
+          missing_idempotency_key:
+            summary: Missing idempotency key
+            value:
+              type: 'https://api.stripe-lite.internal/errors/invalid-request'
+              title: Bad Request
+              status: 400
+              detail: Idempotency-Key is required for payment intent and refund creation.
+              invalid_params:
+                - name: Idempotency-Key
+                  reason: Must contain 1 to 255 characters
+  Unauthorized:
+    description: 'The request has missing, expired, or invalid credentials.'
+    content:
+      application/problem+json:
+        schema:
+          $ref: ../components/problem.yaml#/ProblemDocument
+        examples:
+          authentication_required:
+            summary: Authentication required
+            value:
+              type: 'https://api.stripe-lite.internal/errors/unauthorized'
+              title: Unauthorized
+              status: 401
+              detail: Provide a valid bearer token or X-API-Key.
+    headers:
+      WWW-Authenticate:
+        description: >-
+          This header gives the bearer challenge. Every 401 response contains this header. This rule
+          also applies when the API rejects an API key.
+        required: true
+        schema:
+          type: string
+        example: Bearer realm="stripe-lite"
+  Forbidden:
+    description: The credentials are valid but do not have the required scope. The state does not change.
+    content:
+      application/problem+json:
+        schema:
+          $ref: ../components/problem.yaml#/ProblemDocument
+        examples:
+          example:
+            summary: Forbidden
+            value:
+              type: 'https://api.stripe-lite.internal/errors/forbidden'
+              title: Forbidden
+              status: 403
+              detail: The authenticated credential lacks the required permission for this operation.
+  NotFound:
+    description: 'The resource does not exist, or the authenticated merchant cannot access it.'
+    content:
+      application/problem+json:
+        schema:
+          $ref: ../components/problem.yaml#/ProblemDocument
+        examples:
+          resource_not_found:
+            summary: Resource not found
+            value:
+              type: 'https://api.stripe-lite.internal/errors/not-found'
+              title: Not Found
+              status: 404
+              detail: 'The requested payment intent, refund, customer or payment method was not found.'
+  IdempotencyConflict:
+    description: >-
+      The key is bound to another payload, or the original request is still in progress. The API
+      creates no resource.
+    content:
+      application/problem+json:
+        schema:
+          $ref: ../components/problem.yaml#/ProblemDocument
+        examples:
+          idempotency_conflict:
+            summary: Idempotency conflict
+            value:
+              type: 'https://api.stripe-lite.internal/errors/idempotency-conflict'
+              title: Conflict
+              status: 409
+              detail: This idempotency key is already bound to a different request payload.
+          request_in_progress:
+            summary: Request in progress
+            value:
+              type: 'https://api.stripe-lite.internal/errors/request-in-progress'
+              title: Conflict
+              status: 409
+              detail: >-
+                A request with this idempotency key is still being processed. Retry with the same
+                key and payload.
+  RateLimited:
+    description: >-
+      The request exceeds the quota for the authenticated merchant. The API does not perform the
+      operation. Wait for the time in `Retry-After` before you retry.
+    headers:
+      Retry-After:
+        description: >-
+          This header gives the required wait time in whole seconds. All credentials for one
+          merchant use the same quota. The quota can change with the configuration.
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+        example: 30
+    content:
+      application/problem+json:
+        schema:
+          $ref: ../components/problem.yaml#/ProblemDocument
+        examples:
+          example:
+            summary: Too Many Requests
+            value:
+              type: 'https://api.stripe-lite.internal/errors/rate-limited'
+              title: Too Many Requests
+              status: 429
+              detail: The request quota for this merchant has been exceeded.
+  ServerError:
+    description: >-
+      The API reports an unexpected server error. The problem status equals the actual HTTP status.
+      Read the payment or refund state before you retry. For a creation retry, use the original
+      `Idempotency-Key`.
+    content:
+      application/problem+json:
+        schema:
+          $ref: ../components/problem.yaml#/ProblemDocument
+        examples:
+          example:
+            summary: Internal Server Error
+            value:
+              type: 'https://api.stripe-lite.internal/errors/internal-server-error'
+              title: Internal Server Error
+              status: 500
+              detail: >-
+                An unexpected error occurred. Use the request correlation ID when contacting
+                support.
+  InvalidPagination:
+    description: 'A cursor, filter, or limit is invalid. The API does not perform the list operation.'
+    content:
+      application/problem+json:
+        schema:
+          $ref: ../components/problem.yaml#/ProblemDocument
+        examples:
+          invalid_pagination:
+            summary: Invalid pagination
+            value:
+              type: 'https://api.stripe-lite.internal/errors/invalid-request'
+              title: Bad Request
+              status: 400
+              detail: starting_after and ending_before cannot be supplied together.
+              invalid_params:
+                - name: starting_after
+                  reason: Mutually exclusive with ending_before
+          invalid_cursor:
+            summary: Invalid cursor
+            value:
+              type: 'https://api.stripe-lite.internal/errors/invalid-request'
+              title: Bad Request
+              status: 400
+              detail: The cursor is invalid or unavailable for this collection.
+              invalid_params:
+                - name: starting_after
+                  reason: Must identify an accessible object in this collection
+          invalid_limit:
+            summary: Limit outside supported range
+            value:
+              type: 'https://api.stripe-lite.internal/errors/invalid-request'
+              title: Bad Request
+              status: 400
+              detail: limit must be an integer between 1 and 100.
+              invalid_params:
+                - name: limit
+                  reason: Must be between 1 and 100
+          invalid_filter:
+            summary: Unknown status filter
+            value:
+              type: 'https://api.stripe-lite.internal/errors/invalid-request'
+              title: Bad Request
+              status: 400
+              detail: The status filter is not recognized for this collection.
+              invalid_params:
+                - name: status
+                  reason: Must be one of the documented status values
+  InvalidPathParameter:
+    description: >-
+      The resource ID or another request parameter has an invalid format. The request can also
+      contain an unexpected body.
+    content:
+      application/problem+json:
+        schema:
+          $ref: ../components/problem.yaml#/ProblemDocument
+        examples:
+          invalid_id:
+            summary: Malformed resource identifier
+            value:
+              type: 'https://api.stripe-lite.internal/errors/invalid-request'
+              title: Bad Request
+              status: 400
+              detail: The path id does not match the expected resource identifier format.
+              invalid_params:
+                - name: id
+                  reason: Must match the resource ID pattern
+  ConfirmInvalidRequest:
+    description: >-
+      The request contains invalid JSON or payment method input. The previous payment state does not
+      change.
+    content:
+      application/problem+json:
+        schema:
+          $ref: ../components/problem.yaml#/ProblemDocument
+        examples:
+          missing_payment_method:
+            summary: Missing payment method
+            value:
+              type: 'https://api.stripe-lite.internal/errors/invalid-request'
+              title: Bad Request
+              status: 400
+              detail: A payment_method_id is required when the intent has no stored payment method.
+              invalid_params:
+                - name: payment_method_id
+                  reason: Required in requires_payment_method
+  PaymentDeclined:
+    description: >-
+      The processor declined authorization. The API sets `status` to `requires_payment_method`. The
+      API clears the payment method. The API does not capture funds.
+    content:
+      application/problem+json:
+        schema:
+          $ref: ../components/problem.yaml#/ProblemDocument
+        examples:
+          payment_declined:
+            summary: Payment declined
+            value:
+              type: 'https://api.stripe-lite.internal/errors/payment-declined'
+              title: Payment Declined
+              status: 402
+              detail: Authorization was declined. Supply another payment method and confirm again.
+  StateConflict:
+    description: The current state does not permit the operation. The API performs no new financial operation.
+    content:
+      application/problem+json:
+        schema:
+          $ref: ../components/problem.yaml#/ProblemDocument
+        examples:
+          invalid_state:
+            summary: Invalid state
+            value:
+              type: 'https://api.stripe-lite.internal/errors/invalid-state'
+              title: Conflict
+              status: 409
+              detail: The requested operation is not allowed in the current resource state.
+  ProcessorUnavailable:
+    description: >-
+      The API confirmed that the processor failure had no financial effect. The previous payment
+      state does not change.
+    content:
+      application/problem+json:
+        schema:
+          $ref: ../components/problem.yaml#/ProblemDocument
+        examples:
+          processor_unavailable:
+            summary: Processor unavailable
+            value:
+              type: 'https://api.stripe-lite.internal/errors/processor-unavailable'
+              title: Service Unavailable
+              status: 503
+              detail: >-
+                The payment processor is temporarily unavailable. Retrieve the intent before
+                retrying.
+  RefundConflict:
+    description: >-
+      The request conflicts with the current state, an idempotency key, or the available refund
+      amount. The API performs no new financial operation.
+    content:
+      application/problem+json:
+        schema:
+          $ref: ../components/problem.yaml#/ProblemDocument
+        examples:
+          invalid_state:
+            summary: Invalid state
+            value:
+              type: 'https://api.stripe-lite.internal/errors/invalid-state'
+              title: Conflict
+              status: 409
+              detail: The requested operation is not allowed in the current resource state.
+          idempotency_conflict:
+            summary: Idempotency conflict
+            value:
+              type: 'https://api.stripe-lite.internal/errors/idempotency-conflict'
+              title: Conflict
+              status: 409
+              detail: This idempotency key is already bound to a different request payload.
+          request_in_progress:
+            summary: Request in progress
+            value:
+              type: 'https://api.stripe-lite.internal/errors/request-in-progress'
+              title: Conflict
+              status: 409
+              detail: >-
+                A request with this idempotency key is still being processed. Retry with the same
+                key and payload.
+          refund_exceeds_available:
+            summary: Refund exceeds available
+            value:
+              type: 'https://api.stripe-lite.internal/errors/refund-exceeds-available'
+              title: Conflict
+              status: 409
+              detail: >-
+                The requested refund exceeds the captured amount remaining after succeeded and
+                pending refunds.

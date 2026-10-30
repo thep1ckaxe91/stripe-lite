@@ -42,22 +42,24 @@ stripe-lite/
 │   └── docs/
 │       └── docs.go               # Embedded Swagger UI & raw spec HTTP handlers
 ├── scripts/
-│   └── verify.sh                 # End-to-end curl integration test harness
+│   └── verify.sh                 # End-to-end HTTP integration test harness
 ├── tools/
 │   └── tools.go                  # Developer tool dependencies (oapi-codegen)
 ├── Makefile                      # Tooling orchestration (codegen, build, test, verify)
 ├── oapi-codegen.yaml             # Code generation pipeline configuration
-└── go.mod                        # Go module definition (Go 1.23)
+└── go.mod                        # Go module definition (Go 1.25)
 ```
 
 ---
 
 ## 🛠 Prerequisites
 
-- **Go**: Version `1.23` or newer
+- **Go**: Version `1.25` or newer
 - **Make**: Standard GNU `make`
-- **Bash & curl**: For running the verification test suite
-- **Node.js & npx** *(Optional)*: Required only if running `make lint-redocly`
+- **Bash & curl**: For gateway smoke verification; no DB or Docker is required.
+- **jq & OpenSSL**: Only for full Payments verification with a test database.
+- **PostgreSQL 16 or Docker**: For `make test-integration`. Full Payments verification uses `PAYMENTS_TEST_DATABASE_URL`; database provisioning is separate.
+- **Node.js & npx**: Required to bundle and lint the OpenAPI specification
 
 ---
 
@@ -112,8 +114,9 @@ Once the server is running, access:
 | `make lint-redocly` | Runs strict Redocly style & security audit via localized `npx`. |
 | `make build` | Compiles optimized, stripped server binary to `./bin/server`. |
 | `make run` | Builds binary and boots the HTTP gateway. |
-| `make test` | Executes all package unit & contract tests with `-race` detection enabled. |
-| `make verify` | Boots ephemeral server and executes 8-point end-to-end curl assertion suite. |
+| `make test` | Runs unit and contract tests with the race detector; no database or Docker is required. |
+| `make test-integration` | Runs PostgreSQL integration tests and unit tests. Uses disposable Docker PostgreSQL unless test database URLs are supplied. |
+| `make verify` | Runs gateway HTTP smoke tests without DB/Docker. Also runs Payments assertions when `PAYMENTS_TEST_DATABASE_URL` is set. |
 | `make clean` | Removes `./bin/` artifacts and generated code. |
 
 ---
@@ -130,3 +133,11 @@ To work concurrently on separate Git branches without merge conflicts:
 3. **Spec Evolution Rule**:
    - Schema modifications to `api/openapi.yaml` must be proposed and agreed upon prior to code generation.
    - Always run `make lint-spec && make lint-redocly && make codegen` before opening a pull request.
+
+## Payments
+
+See [the Payments guide](api/payments/README.md) for state rules, ER diagrams, migrations, credentials, and development configuration.
+The root `api/openapi.yaml` declares the Payments paths and the `/v1` prefix directly.
+The real server uses `/v1`. Auth and Webhooks remain assigned to their domain owners.
+Payment processing uses an explicit development adapter in the verification suite.
+No real processor adapter is included in Sprint 1.

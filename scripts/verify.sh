@@ -1,139 +1,190 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PORT=8089
-SERVER_BIN="./bin/server"
-BASE_URL="http://127.0.0.1:${PORT}"
-
-echo "=========================================================="
-echo " Starting Stripe-lite API Gateway Self-Verification Suite "
-echo "=========================================================="
-
-if [ ! -f "$SERVER_BIN" ]; then
-    echo "[-] Binary $SERVER_BIN not found. Building..."
-    make build
+command -v curl >/dev/null || { echo 'curl is required for HTTP verification.' >&2; exit 1; }
+[[ -x ./bin/server ]] || { echo 'Build the server with make build first.' >&2; exit 1; }
+MODE=smoke
+VERIFY_API_KEY=''
+VERIFY_API_KEYS=''
+VERIFY_PROCESSOR=''
+if [[ -n "${PAYMENTS_TEST_DATABASE_URL:-}" ]]; then
+    MODE=payments
+    command -v jq >/dev/null || { echo 'jq is required for Payments verification.' >&2; exit 1; }
+    command -v openssl >/dev/null || { echo 'OpenSSL is required for Payments verification.' >&2; exit 1; }
+    VERIFY_API_KEY=$(openssl rand -hex 32)
+    printf -v VERIFY_API_KEYS '[{"key":"%s","merchant_id":"merchant_demo","scopes":["payment_intents:read","payment_intents:write","refunds:read","refunds:write"]}]' "$VERIFY_API_KEY"
+    VERIFY_PROCESSOR=simulated
 fi
-
-# Launch server in background with custom port
-SERVER_PORT=$PORT $SERVER_BIN &
-SERVER_PID=$!
-
+VERIFY_DIR=$(mktemp -d)
+SERVER_PID=''
 cleanup() {
-    echo "[*] Cleaning up server process PID $SERVER_PID..."
-    kill -TERM "$SERVER_PID" 2>/dev/null || true
-    wait "$SERVER_PID" 2>/dev/null || true
-    echo "[+] Server stopped."
+    if [[ -n "$SERVER_PID" ]]; then
+        kill -TERM "$SERVER_PID" 2>/dev/null || true
+        wait "$SERVER_PID" 2>/dev/null || true
+    fi
+    rm -rf "$VERIFY_DIR"
 }
 trap cleanup EXIT
+fail() {
+    echo "Verification failed: $*" >&2
+    if [[ -f "$VERIFY_DIR/response" ]]; then cat "$VERIFY_DIR/response" >&2; fi
+    if [[ -f "$VERIFY_DIR/server.log" ]]; then cat "$VERIFY_DIR/server.log" >&2; fi
+    exit 1
+}
 
-# Wait for server readiness
-echo "[*] Polling server readiness on port $PORT..."
+VERIFY_PORT=${VERIFY_PORT:-$((20000 + RANDOM % 30000))}
+VERIFY_BASE_URL="http://127.0.0.1:$VERIFY_PORT"
+# Only the explicit test URL enables DB access; normal shell configuration is isolated.
+APP_ENV=development SERVER_HOST=127.0.0.1 SERVER_PORT="$VERIFY_PORT" SERVER_BASE_PATH=/v1 \
+    DATABASE_URL="${PAYMENTS_TEST_DATABASE_URL:-}" PAYMENTS_PROCESSOR="$VERIFY_PROCESSOR" \
+    PAYMENTS_API_KEYS="$VERIFY_API_KEYS" PAYMENTS_JWT_SECRET='' PAYMENTS_JWT_ISSUER='' PAYMENTS_JWT_AUDIENCE='' \
+    PAYMENTS_DEMO_MERCHANT_ID=merchant_demo PAYMENTS_DEMO_CUSTOMER_ID=cus_demo PAYMENTS_RATE_LIMIT=500 \
+    ./bin/server >"$VERIFY_DIR/server.log" 2>&1 &
+SERVER_PID=$!
 READY=0
-for i in {1..30}; do
-    if curl -s -f -o /dev/null "${BASE_URL}/v1/healthz" 2>/dev/null; then
-        READY=1
-        break
-    fi
+for ((i=0;i<50;i++)); do
+    kill -0 "$SERVER_PID" 2>/dev/null || fail 'The server stopped before it became ready. Check VERIFY_PORT.'
+    if curl -fsS --max-time 1 "$VERIFY_BASE_URL/v1/healthz" >"$VERIFY_DIR/health" 2>/dev/null; then READY=1; break; fi
     sleep 0.2
 done
+[[ "$READY" == 1 ]] || fail 'The server did not become ready.'
+kill -0 "$SERVER_PID" 2>/dev/null || fail 'The verification server exited.'
+CHECKS=0
+CHECK_NAMES=()
 
-if [ "$READY" -ne 1 ]; then
-    echo "[-] Server failed to become ready within timeout."
-    exit 1
+# Store responses in the current shell. Smoke assertions need only Bash and curl.
+request() {
+    local expected=$1 method=$2 path=$3 body=${4:-} idem=${5:-} auth=${6:-yes} status compact token
+    local -a args=(-sS --connect-timeout 2 --max-time 5 -X "$method"
+        -D "$VERIFY_DIR/headers" -o "$VERIFY_DIR/response" -w '%{http_code}')
+    if [[ "$auth" == yes && -n "$VERIFY_API_KEY" ]]; then args+=(-H "X-API-Key: $VERIFY_API_KEY"); fi
+    if [[ -n "$body" ]]; then args+=(-H 'Content-Type: application/json' --data-raw "$body"); fi
+    if [[ -n "$idem" ]]; then args+=(-H "Idempotency-Key: $idem"); fi
+    status=$(curl "${args[@]}" "$VERIFY_BASE_URL$path") || fail "$method $path could not connect."
+    RESPONSE=$(cat "$VERIFY_DIR/response")
+    LAST_REQUEST="$method $path"
+    [[ "$status" == "$expected" ]] || fail "$LAST_REQUEST returned $status; expected $expected."
+    if ((expected >= 400)); then
+        grep -qi '^Content-Type: application/problem+json' "$VERIFY_DIR/headers" || fail "$LAST_REQUEST has an invalid error format."
+        compact=${RESPONSE//[[:space:]]/}
+        token="\"status\":$expected"
+        [[ "$compact" == *"$token,"* || "$compact" == *"$token}"* ]] || fail "$LAST_REQUEST has an invalid problem status."
+        [[ "$compact" == *'"type":"https://api.stripe-lite.internal/errors/'* && "$compact" == *'"title":"'* ]] || fail "$LAST_REQUEST has an invalid problem document."
+    fi
+    if [[ "$expected" == 401 ]]; then
+        grep -qi '^WWW-Authenticate:' "$VERIFY_DIR/headers" || fail 'The 401 response has no authentication challenge.'
+    fi
+    CHECKS=$((CHECKS + 1))
+    CHECK_NAMES+=("$method ${path%%\?*} -> $status")
+}
+expect_json() {
+    jq -e "$1" <<<"$RESPONSE" >/dev/null || fail "$LAST_REQUEST has unexpected JSON."
+}
+settled() {
+    local id=$1 state
+    for ((j=0;j<50;j++)); do
+        request 200 GET "/v1/refunds/$id"
+        state=$(jq -er '.status' <<<"$RESPONSE")
+        if [[ "$state" == succeeded ]]; then return; fi
+        [[ "$state" == pending ]] || fail "Refund $id failed."
+        sleep 0.1
+    done
+    fail "Refund $id did not settle."
+}
+
+request 200 GET /v1/healthz
+[[ "$RESPONSE" == *'"status":"ok"'* ]] || fail 'The health probe is not healthy.'
+request 308 GET /healthz
+grep -qi '^Location: /v1/healthz' "$VERIFY_DIR/headers" || fail 'The health redirect has the wrong prefix.'
+request 200 GET /docs
+[[ "$RESPONSE" == *swagger-ui* ]] || fail 'The Swagger UI did not load.'
+request 200 GET /openapi.json
+# Keep large specification checks in Bash to avoid broken pipes with pipefail.
+[[ "$RESPONSE" == *'"title": "Stripe-lite API Gateway"'* && "$RESPONSE" == *'"url": "/v1"'* ]] || fail 'The JSON specification has the wrong title or prefix.'
+for path in /payment-intents '/payment-intents/{id}' '/payment-intents/{id}/confirm' \
+    '/payment-intents/{id}/capture' '/payment-intents/{id}/cancel' /refunds '/refunds/{id}' \
+    /webhook-endpoints '/webhook-endpoints/{id}' '/webhook-endpoints/{id}/rotate-secret'; do
+    [[ "$RESPONSE" == *"\"$path\":"* ]] || fail "The specification has no $path route."
+done
+request 200 GET /openapi.yaml
+[[ "$RESPONSE" == *'title: Stripe-lite API Gateway'* && "$RESPONSE" == *'openapi: 3.0.3'* ]] || fail 'The YAML specification did not load.'
+request 404 GET /v1/not-a-route
+request 401 GET /v1/payment-intents '' '' no
+request 501 POST /v1/auth/tokens '{"api_key":"sk_test_sample"}'
+request 501 GET /v1/webhook-endpoints
+request 501 POST /v1/webhook-endpoints '{"url":"https://example.com/webhook","events":["payment_intent.succeeded"]}'
+request 501 GET /v1/webhook-endpoints/we_smoke
+request 501 PATCH /v1/webhook-endpoints/we_smoke '{"url":"https://example.com/webhook-updated"}'
+request 501 DELETE /v1/webhook-endpoints/we_smoke
+request 501 POST /v1/webhook-endpoints/we_smoke/rotate-secret
+
+if [[ "$MODE" == payments ]]; then
+    BODY='{"amount":2000,"currency":"usd","customer_id":"cus_demo","capture_method":"automatic","payment_method_id":"pm_demo"}'
+    request 400 POST /v1/payment-intents "$BODY"
+    request 201 POST /v1/payment-intents "$BODY" create-auto
+    PAYMENT_ID=$(jq -er '.id' <<<"$RESPONSE")
+    PAYMENT_JSON=$(jq -cS . <<<"$RESPONSE")
+    request 200 GET "/v1/payment-intents/$PAYMENT_ID"
+    [[ $(jq -cS . <<<"$RESPONSE") == "$PAYMENT_JSON" ]] || fail 'Retrieval differs from the creation response.'
+    request 200 POST "/v1/payment-intents/$PAYMENT_ID/confirm" '{}'
+    expect_json '.status == "succeeded"'
+    request 201 POST /v1/payment-intents "$BODY" create-auto
+    [[ $(jq -cS . <<<"$RESPONSE") == "$PAYMENT_JSON" ]] || fail 'Idempotent replay changed the original response.'
+    request 409 POST /v1/payment-intents "${BODY/2000/1000}" create-auto
+    request 409 POST "/v1/payment-intents/$PAYMENT_ID/capture"
+    request 409 POST "/v1/payment-intents/$PAYMENT_ID/cancel"
+    printf -v REFUND_BODY '{"payment_intent_id":"%s","amount":500,"metadata":{"order":"example"}}' "$PAYMENT_ID"
+    request 201 POST /v1/refunds "$REFUND_BODY" refund-partial
+    expect_json '.status == "pending" and .amount == 500'
+    REFUND_ID=$(jq -er '.id' <<<"$RESPONSE")
+    REFUND_JSON=$(jq -cS . <<<"$RESPONSE")
+    settled "$REFUND_ID"
+    request 201 POST /v1/refunds "$REFUND_BODY" refund-partial
+    [[ $(jq -cS . <<<"$RESPONSE") == "$REFUND_JSON" ]] || fail 'Refund replay changed the original response.'
+    printf -v FULL_BODY '{"payment_intent_id":"%s"}' "$PAYMENT_ID"
+    request 201 POST /v1/refunds "$FULL_BODY" refund-full
+    expect_json '.amount == 1500'
+    FULL_ID=$(jq -er '.id' <<<"$RESPONSE")
+    settled "$FULL_ID"
+    request 200 GET "/v1/payment-intents/$PAYMENT_ID"
+    expect_json '.amount_refunded == 2000 and .amount_refund_pending == 0'
+    printf -v EXCESS_BODY '{"payment_intent_id":"%s","amount":1}' "$PAYMENT_ID"
+    request 409 POST /v1/refunds "$EXCESS_BODY" refund-excess
+    request 201 POST /v1/payment-intents "${BODY/automatic/manual}" manual
+    MANUAL_ID=$(jq -er '.id' <<<"$RESPONSE")
+    request 200 POST "/v1/payment-intents/$MANUAL_ID/confirm" '{}'
+    expect_json '.status == "requires_capture"'
+    request 200 POST "/v1/payment-intents/$MANUAL_ID/capture"
+    expect_json '.status == "succeeded"'
+    request 201 POST /v1/payment-intents "$BODY" cancel
+    CANCEL_ID=$(jq -er '.id' <<<"$RESPONSE")
+    request 200 POST "/v1/payment-intents/$CANCEL_ID/cancel"
+    expect_json '.status == "canceled"'
+    request 409 POST "/v1/payment-intents/$CANCEL_ID/confirm" '{}'
+    request 201 POST /v1/payment-intents "${BODY/pm_demo/pm_declined}" declined
+    DECLINED_ID=$(jq -er '.id' <<<"$RESPONSE")
+    request 402 POST "/v1/payment-intents/$DECLINED_ID/confirm" '{}'
+    request 404 POST /v1/payment-intents "${BODY/cus_demo/cus_other}" other-customer
+    request 200 GET '/v1/payment-intents?limit=1'
+    expect_json '.object == "list" and (.data | length) == 1 and .has_more'
+    CURSOR=$(jq -er '.data[0].id' <<<"$RESPONSE")
+    request 200 GET "/v1/payment-intents?limit=1&starting_after=$CURSOR"
+    request 200 GET "/v1/refunds?payment_intent_id=$PAYMENT_ID"
+    expect_json '(.data | length) == 2'
+    request 201 POST /v1/payment-intents "${BODY/2000/9223372036854775807}" int64
+    # Inspect the raw JSON so a JSON tool cannot round the int64 boundary.
+    grep -Eq '"amount"[[:space:]]*:[[:space:]]*9223372036854775807[[:space:]]*[,}]' "$VERIFY_DIR/response" || fail 'The int64 amount lost precision.'
 fi
-echo "[+] Gateway successfully booted and ready."
-
-# Test 1: Liveness / Readiness healthz endpoint
-echo -n "[*] Testing GET /v1/healthz ... "
-HEALTH_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" "${BASE_URL}/v1/healthz")
-STATUS_CODE=$(echo "$HEALTH_RESP" | grep "HTTP_STATUS" | cut -d':' -f2)
-BODY=$(echo "$HEALTH_RESP" | grep -v "HTTP_STATUS")
-
-if [ "$STATUS_CODE" != "200" ]; then
-    echo "FAILED (Expected 200, got $STATUS_CODE)"
-    exit 1
+if [[ -n "${VERIFY_REPORT:-}" ]]; then
+    # Check names contain only fixed methods, internal paths, generated IDs and status codes.
+    {
+        printf '{"passed":true,"mode":"%s","checks":[' "$MODE"
+        separator=''
+        for check in "${CHECK_NAMES[@]}"; do
+            printf '%s"%s"' "$separator" "$check"
+            separator=,
+        done
+        printf ']}\n'
+    } >"$VERIFY_REPORT"
 fi
-echo "$BODY" | grep -q '"status":"ok"' || { echo "FAILED (status!=ok)"; exit 1; }
-echo "PASSED (HTTP 200, Body: $BODY)"
-
-# Test 2: Root /healthz redirect
-echo -n "[*] Testing GET /healthz redirect ... "
-REDIRECT_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${BASE_URL}/healthz")
-if [ "$REDIRECT_CODE" != "308" ] && [ "$REDIRECT_CODE" != "301" ] && [ "$REDIRECT_CODE" != "200" ]; then
-    echo "FAILED (Unexpected status $REDIRECT_CODE)"
-    exit 1
-fi
-echo "PASSED (HTTP $REDIRECT_CODE)"
-
-# Test 3: Swagger UI HTML endpoint
-echo -n "[*] Testing GET /docs (Swagger UI) ... "
-DOCS_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${BASE_URL}/docs")
-if [ "$DOCS_CODE" != "200" ]; then
-    echo "FAILED (Expected 200, got $DOCS_CODE)"
-    exit 1
-fi
-echo "PASSED (HTTP 200)"
-
-# Test 4: OpenAPI JSON endpoint
-echo -n "[*] Testing GET /openapi.json ... "
-JSON_SPEC=$(curl -s "${BASE_URL}/openapi.json")
-[[ "$JSON_SPEC" == *'"title": "Stripe-lite API Gateway"'* ]] || { echo "FAILED (title mismatch)"; exit 1; }
-echo "PASSED (Valid JSON specification served)"
-
-# Test 5: OpenAPI YAML endpoint
-echo -n "[*] Testing GET /openapi.yaml ... "
-YAML_SPEC=$(curl -s "${BASE_URL}/openapi.yaml")
-[[ "$YAML_SPEC" == *'title: Stripe-lite API Gateway'* ]] || { echo "FAILED (YAML title mismatch)"; exit 1; }
-echo "PASSED (Valid YAML specification served)"
-
-# Test 6: Stub endpoint RFC 7807 Problem Details (POST /v1/payment-intents)
-echo -n "[*] Testing Stub POST /v1/payment-intents (RFC 7807 501 Not Implemented) ... "
-STUB_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "${BASE_URL}/v1/payment-intents" \
-    -H "Content-Type: application/json" \
-    -H "Idempotency-Key: test-key-123" \
-    -H "X-Request-Id: 6ba7b810-9dad-11d1-80b4-00c04fd430c8" \
-    -d '{"amount": 2000, "currency": "usd", "customer_id": "cus_123"}')
-STUB_CODE=$(echo "$STUB_RESP" | grep "HTTP_STATUS" | cut -d':' -f2)
-STUB_BODY=$(echo "$STUB_RESP" | grep -v "HTTP_STATUS")
-
-if [ "$STUB_CODE" != "501" ]; then
-    echo "FAILED (Expected 501, got $STUB_CODE)"
-    exit 1
-fi
-echo "$STUB_BODY" | grep -q "not-implemented" || { echo "FAILED (RFC 7807 type mismatch)"; exit 1; }
-echo "$STUB_BODY" | grep -q "Long" || { echo "FAILED (Domain owner reference missing)"; exit 1; }
-echo "PASSED (HTTP 501 RFC 7807 ProblemDocument: $STUB_BODY)"
-
-# Test 7: Stub endpoint RFC 7807 Problem Details (POST /v1/auth/tokens)
-echo -n "[*] Testing Stub POST /v1/auth/tokens (RFC 7807 501 Not Implemented) ... "
-AUTH_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "${BASE_URL}/v1/auth/tokens" \
-    -H "Content-Type: application/json" \
-    -d '{"api_key": "sk_test_123"}')
-AUTH_CODE=$(echo "$AUTH_RESP" | grep "HTTP_STATUS" | cut -d':' -f2)
-AUTH_BODY=$(echo "$AUTH_RESP" | grep -v "HTTP_STATUS")
-
-if [ "$AUTH_CODE" != "501" ]; then
-    echo "FAILED (Expected 501, got $AUTH_CODE)"
-    exit 1
-fi
-echo "$AUTH_BODY" | grep -q "Khánh" || { echo "FAILED (Domain owner reference missing)"; exit 1; }
-echo "PASSED (HTTP 501 RFC 7807 ProblemDocument)"
-
-# Test 8: Stub endpoint RFC 7807 Problem Details (POST /v1/webhook-endpoints)
-echo -n "[*] Testing Stub POST /v1/webhook-endpoints (RFC 7807 501 Not Implemented) ... "
-WH_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "${BASE_URL}/v1/webhook-endpoints" \
-    -H "Content-Type: application/json" \
-    -d '{"url": "https://example.com/webhook", "events": ["payment_intent.succeeded"]}')
-WH_CODE=$(echo "$WH_RESP" | grep "HTTP_STATUS" | cut -d':' -f2)
-WH_BODY=$(echo "$WH_RESP" | grep -v "HTTP_STATUS")
-
-if [ "$WH_CODE" != "501" ]; then
-    echo "FAILED (Expected 501, got $WH_CODE)"
-    exit 1
-fi
-echo "$WH_BODY" | grep -q "Sơn" || { echo "FAILED (Domain owner reference missing)"; exit 1; }
-echo "PASSED (HTTP 501 RFC 7807 ProblemDocument)"
-
-echo "=========================================================="
-echo " All Verification Checks Passed Successfully! [8/8]       "
-echo "=========================================================="
+echo "Gateway verification passed: $CHECKS HTTP assertions ($MODE mode)."

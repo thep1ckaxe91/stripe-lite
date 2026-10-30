@@ -1,12 +1,16 @@
 IdempotencyKeyHeader:
   name: Idempotency-Key
   in: header
-  required: false
+  # The key is required to prevent duplicate payments and refunds.
+  required: true
   description: |
-    Unique idempotency key supplied by the client to prevent double charging across network partitions.
-    Recommended to use a v4 UUID or unique sequence token (max length 255 chars).
+    This key is required to create a PaymentIntent or refund.
+    Use the same key for each retry of the same request.
+    The key prevents duplicate payments and refunds.
+    Use a UUID v4 or another unique value.
   schema:
     type: string
+    minLength: 1
     maxLength: 255
     example: 9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d
 
