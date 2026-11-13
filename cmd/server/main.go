@@ -12,9 +12,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 	v1 "github.com/thep1ckaxe91/stripe-lite/internal/api/v1"
 	"github.com/thep1ckaxe91/stripe-lite/internal/config"
 	"github.com/thep1ckaxe91/stripe-lite/internal/docs"
+	"github.com/thep1ckaxe91/stripe-lite/internal/middleware"
 	"github.com/thep1ckaxe91/stripe-lite/internal/payments"
 )
 
@@ -28,6 +30,24 @@ func main() {
 
 	if cfg.Environment == "production" {
 		gin.SetMode(gin.ReleaseMode)
+	}
+
+	var redisCmdable redis.Cmdable
+	if cfg.RedisURL != "" {
+		redisOpts, err := redis.ParseURL(cfg.RedisURL)
+		if err != nil {
+			log.Fatalf("Invalid REDIS_URL: %v", err)
+		}
+		client := redis.NewClient(redisOpts)
+		pingCtx, cancelPing := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := client.Ping(pingCtx).Err(); err != nil {
+			cancelPing()
+			_ = client.Close()
+			log.Fatalf("Redis connection failure: %v", err)
+		}
+		cancelPing()
+		defer func() { _ = client.Close() }()
+		redisCmdable = client
 	}
 
 	startup, done := context.WithTimeout(context.Background(), 5*time.Second)
@@ -56,6 +76,22 @@ func main() {
 	router.GET("/healthz", func(c *gin.Context) {
 		c.Redirect(http.StatusPermanentRedirect, cfg.BasePath+"/healthz")
 	})
+
+	subjectResolver := middleware.NewSubjectResolver(runtime.Credentials)
+	router.Use(middleware.RequestID())
+	router.Use(middleware.RateLimit(middleware.RateLimitConfig{
+		Redis:        redisCmdable,
+		DefaultLimit: runtime.RateLimit,
+		Window:       cfg.RateLimitWindow,
+		Subject:      subjectResolver,
+		BasePath:     cfg.BasePath,
+	}))
+	router.Use(middleware.Idempotency(middleware.IdempotencyConfig{
+		Redis:   redisCmdable,
+		TTL:     cfg.IdempotencyTTL,
+		LockTTL: cfg.IdempotencyLockTTL,
+		Subject: subjectResolver,
+	}))
 
 	// Instantiate strictly-typed domain server
 	domainServer := v1.NewServer(version, v1.WithPayments(runtime.Service, runtime.Credentials, runtime.RateLimit))

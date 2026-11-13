@@ -36,7 +36,7 @@ VERIFY_PORT=${VERIFY_PORT:-$((20000 + RANDOM % 30000))}
 VERIFY_BASE_URL="http://127.0.0.1:$VERIFY_PORT"
 # Only the explicit test URL enables DB access; normal shell configuration is isolated.
 APP_ENV=development SERVER_HOST=127.0.0.1 SERVER_PORT="$VERIFY_PORT" SERVER_BASE_PATH=/v1 \
-    DATABASE_URL="${PAYMENTS_TEST_DATABASE_URL:-}" PAYMENTS_PROCESSOR="$VERIFY_PROCESSOR" \
+    DATABASE_URL="${PAYMENTS_TEST_DATABASE_URL:-}" REDIS_URL="${GATEWAY_TEST_REDIS_URL:-}" PAYMENTS_PROCESSOR="$VERIFY_PROCESSOR" \
     PAYMENTS_API_KEYS="$VERIFY_API_KEYS" PAYMENTS_JWT_SECRET='' PAYMENTS_JWT_ISSUER='' PAYMENTS_JWT_AUDIENCE='' \
     PAYMENTS_DEMO_MERCHANT_ID=merchant_demo PAYMENTS_DEMO_CUSTOMER_ID=cus_demo PAYMENTS_RATE_LIMIT=500 \
     ./bin/server >"$VERIFY_DIR/server.log" 2>&1 &
@@ -111,6 +111,10 @@ request 200 GET /openapi.yaml
 request 404 GET /v1/not-a-route
 request 401 GET /v1/payment-intents '' '' no
 request 501 POST /v1/auth/tokens '{"api_key":"sk_test_sample"}'
+grep -qi '^X-Request-Id:' "$VERIFY_DIR/headers" || fail 'Gateway did not attach X-Request-Id header.'
+grep -qi '^X-RateLimit-Limit: 500' "$VERIFY_DIR/headers" || fail 'Gateway did not attach X-RateLimit-Limit header.'
+grep -qi '^X-RateLimit-Remaining:' "$VERIFY_DIR/headers" || fail 'Gateway did not attach X-RateLimit-Remaining header.'
+grep -qi '^X-RateLimit-Reset:' "$VERIFY_DIR/headers" || fail 'Gateway did not attach X-RateLimit-Reset header.'
 request 501 GET /v1/webhook-endpoints
 request 501 POST /v1/webhook-endpoints '{"url":"https://example.com/webhook","events":["payment_intent.succeeded"]}'
 request 501 GET /v1/webhook-endpoints/we_smoke

@@ -9,8 +9,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
@@ -57,34 +55,32 @@ func (s *Server) PaymentMiddleware(basePath string) (gin.HandlerFunc, error) {
 	if err != nil {
 		return nil, err
 	}
-	type bucket struct {
-		count int
-		until time.Time
-	}
-	var mu sync.Mutex
-	buckets := map[string]bucket{}
-	nextSweep := time.Now().Add(time.Minute)
 	return func(c *gin.Context) {
 		path := strings.TrimPrefix(c.Request.URL.Path, basePath)
 		if path != "/payment-intents" && !strings.HasPrefix(path, "/payment-intents/") && path != "/refunds" && !strings.HasPrefix(path, "/refunds/") {
 			c.Next()
 			return
 		}
-		requestID := uuid.NewString()
-		if id, e := uuid.Parse(c.GetHeader("X-Request-Id")); e == nil {
-			requestID = id.String()
+		requestID := c.Writer.Header().Get("X-Request-Id")
+		if requestID == "" {
+			requestID = uuid.NewString()
+			if id, e := uuid.Parse(c.GetHeader("X-Request-Id")); e == nil {
+				requestID = id.String()
+			}
+			c.Header("X-Request-Id", requestID)
 		}
-		c.Header("X-Request-Id", requestID)
-		var p payments.Principal
-		var authErr error
-		if s.auth == nil {
-			authErr = payments.ErrUnauthorized
-		} else {
-			p, authErr = s.auth.Authenticate(c.Request)
-		}
-		if authErr != nil {
-			abortPayment(c, payments.ErrUnauthorized)
-			return
+		p, ok := payments.PrincipalFrom(c.Request.Context())
+		if !ok {
+			var authErr error
+			if s.auth == nil {
+				authErr = payments.ErrUnauthorized
+			} else {
+				p, authErr = s.auth.Authenticate(c.Request)
+			}
+			if authErr != nil {
+				abortPayment(c, payments.ErrUnauthorized)
+				return
+			}
 		}
 		scope := "payment_intents:"
 		if strings.HasPrefix(path, "/refunds") {
@@ -97,27 +93,6 @@ func (s *Server) PaymentMiddleware(basePath string) (gin.HandlerFunc, error) {
 		}
 		if !p.Scopes[scope] {
 			abortPayment(c, payments.Fail(403, "forbidden", "The credential does not have the required scope."))
-			return
-		}
-		now := time.Now()
-		mu.Lock()
-		if now.After(nextSweep) {
-			for key, b := range buckets {
-				if !now.Before(b.until) {
-					delete(buckets, key)
-				}
-			}
-			nextSweep = now.Add(time.Minute)
-		}
-		b := buckets[p.MerchantID]
-		if !now.Before(b.until) {
-			b = bucket{until: now.Add(time.Minute)}
-		}
-		b.count++
-		buckets[p.MerchantID] = b
-		mu.Unlock()
-		if b.count > s.rateLimit {
-			abortPayment(c, payments.Fail(429, "rate-limited", "The request limit was reached. Retry later."))
 			return
 		}
 		c.Request = c.Request.WithContext(payments.WithPrincipal(c.Request.Context(), p))
