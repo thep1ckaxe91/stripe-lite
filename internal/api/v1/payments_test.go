@@ -7,11 +7,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/getkin/kin-openapi/routers/legacy"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/thep1ckaxe91/stripe-lite/internal/middleware"
 	"github.com/thep1ckaxe91/stripe-lite/internal/payments"
 )
 
@@ -33,6 +35,13 @@ func testRouter(t *testing.T, service *payments.Service, m string, limit int) *g
 	}
 	r := gin.New()
 	r.ContextWithFallback = true
+	r.Use(middleware.RequestID())
+	r.Use(middleware.RateLimit(middleware.RateLimitConfig{
+		DefaultLimit: limit,
+		Window:       time.Minute,
+		BasePath:     "/v1",
+		Subject:      middleware.NewSubjectResolver(a),
+	}))
 	r.Use(mw)
 	RegisterHandlersWithOptions(r, NewStrictHandler(s, nil), GinServerOptions{BaseURL: "/v1", ErrorHandler: PaymentBindingError})
 	return r
